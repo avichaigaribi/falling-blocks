@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080b14">
+  <title>Falling Blocks</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      overflow: auto;
+      color: #e8eef9;
+      background: radial-gradient(ellipse at 50% 42%, #151b2d 0%, #0b0f1b 55%, #070910 100%);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    .game { width: min(600px, calc(100vw - 32px)); }
+    .topbar {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 4px 12px;
+    }
+    h1 { margin: 0; font-size: 19px; letter-spacing: .12em; text-transform: uppercase; }
+    .tagline { margin-top: 3px; color: #8591a9; font-size: 11px; }
+    .stats { display: flex; gap: 18px; text-align: right; }
+    .stat-label { color: #8490a8; font-size: 9px; letter-spacing: .14em; text-transform: uppercase; }
+    .stat-value { margin-top: 2px; font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .stage {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid #28334a;
+      border-radius: 12px;
+      background: #090d18;
+      box-shadow: 0 20px 65px #0009, 0 0 35px #5272bd10;
+    }
+    canvas { display: block; width: 100%; height: auto; aspect-ratio: 4 / 5; touch-action: none; cursor: crosshair; }
+    .help { padding: 10px 4px 0; color: #8591a9; font-size: 11px; text-align: center; }
+    .help span { color: #cbd6e8; }
+    .gameover {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: #050914ad;
+      backdrop-filter: blur(3px);
+      transition: opacity .18s ease;
+    }
+    .gameover[hidden] { display: none; }
+    .card {
+      width: min(330px, 100%);
+      padding: 25px 22px;
+      border: 1px solid #43516d;
+      border-radius: 14px;
+      background: linear-gradient(145deg, #171f31, #0c1220);
+      box-shadow: 0 18px 50px #0008;
+      text-align: center;
+    }
+    .card h2 { margin: 0 0 7px; font-size: 25px; }
+    .card p { margin: 0; color: #a6b2c7; font-size: 13px; line-height: 1.6; }
+    .restart { margin-top: 18px; color: #a6f0c1; font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    @media (max-height: 820px) and (min-width: 640px) { .game { width: min(600px, calc((100vh - 100px) * .8)); } }
+  </style>
+</head>
+<body>
+  <main class="game">
+    <header class="topbar">
+      <div><h1>Falling Blocks</h1><div class="tagline">Dodge red · Collect green</div></div>
+      <div class="stats" aria-live="polite">
+        <div><div class="stat-label">Score</div><div class="stat-value" id="score">0</div></div>
+        <div><div class="stat-label">Survived</div><div class="stat-value"><span id="time">0.0</span><small style="font-size:10px;color:#8490a8"> s</small></div></div>
+      </div>
+    </header>
+    <div class="stage">
+      <canvas id="gameCanvas" width="600" height="750" aria-label="Falling Blocks game. Move the paddle to dodge red blocks and collect green gems."></canvas>
+      <div class="gameover" id="gameover" hidden>
+        <div class="card"><h2>Game Over</h2><p>You scored <strong id="finalScore">0</strong> and survived <strong id="finalTime">0.0</strong> seconds.</p><div class="restart">Press Space to play again</div></div>
+      </div>
+    </div>
+    <div class="help"><span>Mouse</span> to move &nbsp;·&nbsp; <span>← →</span> or <span>A / D</span> to move &nbsp;·&nbsp; <span>Space</span> to restart</div>
+  </main>
+
+  <script>
+    (() => {
+      'use strict';
+      const canvas = document.getElementById('gameCanvas');
+      const ctx = canvas.getContext('2d');
+      const scoreNode = document.getElementById('score');
+      const timeNode = document.getElementById('time');
+      const overlay = document.getElementById('gameover');
+      const finalScoreNode = document.getElementById('finalScore');
+      const finalTimeNode = document.getElementById('finalTime');
+      const W = 600, H = 750;
+      const keys = new Set();
+      const paddle = { x: W / 2, y: H - 48, w: 94, h: 16, speed: 430 };
+      let objects = [], particles = [], score = 0, elapsed = 0, running = true;
+      let lastTime = performance.now(), spawnTimer = 0, gemTimer = 0;
+      let mouseX = null;
+      let randomState = (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
+      function random() { randomState = (1664525 * randomState + 1013904223) >>> 0; return randomState / 4294967296; }
+
+      function startGame() {
+        objects = []; particles = []; score = 0; elapsed = 0;
+        spawnTimer = 0.25; gemTimer = 1.5; paddle.x = W / 2; mouseX = null;
+        running = true; overlay.hidden = true;
+        scoreNode.textContent = '0'; timeNode.textContent = '0.0';
+        lastTime = performance.now();
+      }
+      function endGame() {
+        if (!running) return;
+        running = false;
+        finalScoreNode.textContent = String(score);
+        finalTimeNode.textContent = elapsed.toFixed(1);
+        overlay.hidden = false;
+      }
+      function pointerPosition(event) {
+        const rect = canvas.getBoundingClientRect();
+        return (event.clientX - rect.left) * W / rect.width;
+      }
+      canvas.addEventListener('pointermove', event => { mouseX = pointerPosition(event); });
+      canvas.addEventListener('pointerdown', event => {
+        mouseX = pointerPosition(event);
+        if (canvas.setPointerCapture) canvas.setPointerCapture(event.pointerId);
+      });
+      canvas.addEventListener('pointerleave', () => { mouseX = null; });
+      window.addEventListener('keydown', event => {
+        if (['ArrowLeft', 'ArrowRight', ' ', 'a', 'A', 'd', 'D'].includes(event.key)) event.preventDefault();
+        if (event.code === 'Space') { if (!running) startGame(); return; }
+        keys.add(event.key.toLowerCase());
+      });
+      window.addEventListener('keyup', event => keys.delete(event.key.toLowerCase()));
+      window.addEventListener('blur', () => keys.clear());
+
+      function spawnBlock() {
+        const size = 23 + random() * 23;
+        const difficulty = Math.min(elapsed * 2.2, 150);
+        objects.push({ type: 'block', x: size / 2 + random() * (W - size), y: -size, w: size, h: size * (.75 + random() * .5), vy: 175 + random() * 105 + difficulty, spin: (random() - .5) * 2.5, angle: random() * Math.PI, passed: false });
+      }
+      function spawnGem() {
+        const size = 13;
+        objects.push({ type: 'gem', x: 25 + random() * (W - 50), y: -size, w: size * 1.5, h: size * 1.5, vy: 145 + random() * 75 + Math.min(elapsed, 100), phase: random() * Math.PI * 2 });
+      }
+      function overlaps(a, b) {
+        return a.x - a.w / 2 < b.x + b.w / 2 && a.x + a.w / 2 > b.x - b.w / 2 &&
+          a.y - a.h / 2 < b.y + b.h / 2 && a.y + a.h / 2 > b.y - b.h / 2;
+      }
+      function update(dt) {
+        if (!running) return;
+        elapsed += dt;
+        timeNode.textContent = elapsed.toFixed(1);
+        const left = keys.has('arrowleft') || keys.has('a');
+        const right = keys.has('arrowright') || keys.has('d');
+        if (left !== right) {
+          paddle.x += (right ? 1 : -1) * paddle.speed * dt;
+          mouseX = null;
+        } else if (mouseX !== null) paddle.x += (mouseX - paddle.x) * Math.min(1, dt * 16);
+        paddle.x = Math.max(paddle.w / 2 + 5, Math.min(W - paddle.w / 2 - 5, paddle.x));
+
+        spawnTimer -= dt;
+        if (spawnTimer <= 0) { spawnBlock(); spawnTimer = Math.max(.25, .78 - elapsed * .004) * (.7 + random() * .55); }
+        gemTimer -= dt;
+        if (gemTimer <= 0) { spawnGem(); gemTimer = 1.8 + random() * 1.45; }
+
+        const paddleBox = { x: paddle.x, y: paddle.y, w: paddle.w, h: paddle.h };
+        for (let i = objects.length - 1; i >= 0; i--) {
+          const obj = objects[i];
+          obj.y += obj.vy * dt;
+          if (obj.type === 'block') obj.angle += obj.spin * dt;
+          if (overlaps(obj, paddleBox)) {
+            if (obj.type === 'block') { endGame(); break; }
+            score += 10; scoreNode.textContent = String(score);
+            for (let n = 0; n < 9; n++) particles.push({ x: obj.x, y: obj.y, vx: (random() - .5) * 160, vy: (random() - .5) * 160, life: .55, maxLife: .55 });
+            objects.splice(i, 1); continue;
+          }
+          if (obj.y - obj.h / 2 > H) objects.splice(i, 1);
+        }
+        particles = particles.filter(p => p.life > 0);
+        particles.forEach(p => { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; });
+      }
+      function drawBackground() {
+        const bg = ctx.createLinearGradient(0, 0, W, H);
+        bg.addColorStop(0, '#0c1220'); bg.addColorStop(1, '#080c16');
+        ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+        ctx.strokeStyle = '#a9c5ff0a'; ctx.lineWidth = 1;
+        for (let x = 30; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+        for (let y = 30; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+        for (let i = 0; i < 45; i++) {
+          const x = (i * 137.5 + 29) % W, y = (i * 223.7 + 11) % H;
+          ctx.fillStyle = i % 4 === 0 ? '#a8c9ff66' : '#cad7ee30';
+          ctx.fillRect(x, y, i % 5 === 0 ? 2 : 1, i % 5 === 0 ? 2 : 1);
+        }
+      }
+      function draw() {
+        ctx.clearRect(0, 0, W, H); drawBackground();
+        // A subtle danger line frames the paddle's play area.
+        ctx.strokeStyle = '#ff65731a'; ctx.setLineDash([4, 9]); ctx.beginPath(); ctx.moveTo(0, H - 100); ctx.lineTo(W, H - 100); ctx.stroke(); ctx.setLineDash([]);
+        objects.forEach(obj => {
+          if (obj.type === 'block') {
+            ctx.save(); ctx.translate(obj.x, obj.y); ctx.rotate(obj.angle);
+            ctx.shadowColor = '#ff4759'; ctx.shadowBlur = 17;
+            const grad = ctx.createLinearGradient(-obj.w/2, -obj.h/2, obj.w/2, obj.h/2);
+            grad.addColorStop(0, '#ff7881'); grad.addColorStop(1, '#d72d48');
+            ctx.fillStyle = grad; ctx.fillRect(-obj.w/2, -obj.h/2, obj.w, obj.h);
+            ctx.shadowBlur = 0; ctx.strokeStyle = '#ffadb1a0'; ctx.lineWidth = 1; ctx.strokeRect(-obj.w/2, -obj.h/2, obj.w, obj.h);
+            ctx.restore();
+          } else {
+            ctx.save(); ctx.translate(obj.x, obj.y); ctx.rotate(Math.sin(elapsed * 2 + obj.phase) * .12);
+            ctx.shadowColor = '#45f39a'; ctx.shadowBlur = 19;
+            const g = ctx.createLinearGradient(-10, -12, 10, 12); g.addColorStop(0, '#a5ffd0'); g.addColorStop(1, '#32d77e');
+            ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0, -13); ctx.lineTo(10, 0); ctx.lineTo(0, 13); ctx.lineTo(-10, 0); ctx.closePath(); ctx.fill();
+            ctx.shadowBlur = 0; ctx.strokeStyle = '#d5ffe7'; ctx.lineWidth = 1; ctx.stroke(); ctx.restore();
+          }
+        });
+        particles.forEach(p => { ctx.globalAlpha = p.life / p.maxLife; ctx.fillStyle = '#83ffb5'; ctx.shadowColor = '#45f39a'; ctx.shadowBlur = 9; ctx.fillRect(p.x - 2, p.y - 2, 4, 4); });
+        ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+        // Paddle
+        const x = paddle.x - paddle.w / 2, y = paddle.y - paddle.h / 2;
+        ctx.shadowColor = '#53b7ff'; ctx.shadowBlur = 20;
+        const pg = ctx.createLinearGradient(x, y, x, y + paddle.h); pg.addColorStop(0, '#a0dfff'); pg.addColorStop(1, '#428be6');
+        ctx.fillStyle = pg; ctx.beginPath(); ctx.roundRect(x, y, paddle.w, paddle.h, 7); ctx.fill();
+        ctx.shadowBlur = 0; ctx.fillStyle = '#e4f7ff'; ctx.fillRect(paddle.x - 21, y + 4, 42, 2);
+        ctx.fillStyle = '#53647e'; ctx.fillRect(12, H - 15, W - 24, 1);
+      }
+      function frame(now) {
+        const dt = Math.min((now - lastTime) / 1000, 0.04); lastTime = now;
+        update(dt); draw(); requestAnimationFrame(frame);
+      }
+      startGame();
+      requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+</html>
